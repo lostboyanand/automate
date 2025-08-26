@@ -3,6 +3,10 @@ import glob
 import time
 import logging
 from playwright.sync_api import sync_playwright
+from flask import Flask, request, jsonify
+
+# Create Flask app
+app = Flask(__name__)
 
 # Global storage for browser sessions
 browser_sessions = {}
@@ -250,13 +254,56 @@ def run_uber_signup_step2(otp_code, user_id):
         except:
             pass
 
-# For testing locally
-if __name__ == "__main__":
-    test_email = input("Enter test email: ")
-    result1 = run_uber_signup_step1(email=test_email, user_id="test_user")
-    print(f"Step 1 Result: {result1}")
+# Flask routes for API endpoints
+@app.route('/health', methods=['GET'])
+def health_check():
+    return jsonify({"status": "ok", "message": "Service is running"})
+
+@app.route('/signup/step1', methods=['POST'])
+def signup_step1():
+    data = request.json
+    if not data:
+        return jsonify({"status": "error", "message": "No data provided"}), 400
     
-    if result1["status"] == "otp_ready":
-        test_otp = input("Enter real OTP: ")
-        result2 = run_uber_signup_step2(otp_code=test_otp, user_id="test_user")
-        print(f"Step 2 Result: {result2}")
+    email = data.get('email')
+    user_id = data.get('user_id')
+    
+    if not email or not user_id:
+        return jsonify({"status": "error", "message": "Email and user_id are required"}), 400
+        
+    result = run_uber_signup_step1(email=email, user_id=user_id)
+    return jsonify(result)
+
+@app.route('/signup/step2', methods=['POST'])
+def signup_step2():
+    data = request.json
+    if not data:
+        return jsonify({"status": "error", "message": "No data provided"}), 400
+    
+    otp = data.get('otp')
+    user_id = data.get('user_id')
+    
+    if not otp or not user_id:
+        return jsonify({"status": "error", "message": "OTP and user_id are required"}), 400
+        
+    result = run_uber_signup_step2(otp_code=otp, user_id=user_id)
+    return jsonify(result)
+
+# For running the app
+if __name__ == "__main__":
+    # Check if we're in a deployed environment
+    if os.environ.get('RENDER') == 'true':
+        # In Render, run the Flask app without interactive input
+        port = int(os.environ.get('PORT', 8080))
+        app.run(host='0.0.0.0', port=port)
+    else:
+        # Local development - use interactive mode for testing
+        print("Running in local mode with interactive input")
+        test_email = input("Enter test email: ")
+        result1 = run_uber_signup_step1(email=test_email, user_id="test_user")
+        print(f"Step 1 Result: {result1}")
+        
+        if result1["status"] == "otp_ready":
+            test_otp = input("Enter real OTP: ")
+            result2 = run_uber_signup_step2(otp_code=test_otp, user_id="test_user")
+            print(f"Step 2 Result: {result2}")
