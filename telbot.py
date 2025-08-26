@@ -5,7 +5,7 @@ import ssl
 import telebot
 import threading
 from http.server import HTTPServer, SimpleHTTPRequestHandler
-from create_account import run_uber_signup  # Import your automation
+from create_account import run_uber_signup_step1, run_uber_signup_step2  # Updated imports
 
 # Monkey-patch Session to always disable SSL verification
 old_request = Session.request
@@ -43,9 +43,14 @@ def send_welcome(message):
 🚗 Welcome to Uber Signup Bot!
 
 Commands:
-/create - Start creating an Uber account
+/create - Start creating an Uber account (Two-step process)
 /status - Check bot status
 /help - Show this message
+
+✨ New Flow:
+1. Send email → I'll start automation
+2. I'll reach OTP page → You send real OTP
+3. I'll complete the signup!
 
 Ready to automate your learning! 🚀
     """
@@ -57,7 +62,17 @@ def bot_status(message):
 
 @bot.message_handler(commands=['create'])
 def start_signup(message):
-    bot.reply_to(message, "📧 Please send me the email address you want to use for the Uber account:")
+    bot.reply_to(message, """
+📧 Please send me the email address you want to use for the Uber account:
+
+🔄 **New Smart Flow:**
+1. I'll start automation with your email
+2. I'll stop at OTP page and ask for real OTP
+3. You check your email and send me the real code
+4. I'll complete the signup!
+
+Much better than asking for OTP before it exists! 🎯
+    """)
     bot.register_next_step_handler(message, process_email)
 
 def process_email(message):
@@ -65,77 +80,204 @@ def process_email(message):
     
     # Basic email validation
     if '@' not in email or '.' not in email:
-        bot.reply_to(message, "❌ That doesn't look like a valid email. Please try again with a valid email address:")
+        bot.reply_to(message, "❌ That doesn't look like a valid email. Please try again:")
         bot.register_next_step_handler(message, process_email)
         return
     
     # Store email in user session
-    user_sessions[message.chat.id] = {'email': email}
+    user_sessions[message.chat.id] = {
+        'email': email,
+        'step': 'processing_email'
+    }
     
-    bot.reply_to(message, f"✅ Email saved: {email}\n\n🔐 Now please send me the 4-digit OTP code:")
-    bot.register_next_step_handler(message, process_otp)
+    bot.reply_to(message, f"""
+✅ Email: {email}
 
-def process_otp(message):
+🚀 Starting automation...
+📧 I'll navigate to Uber, enter your email, and reach the OTP page
+⏳ Then I'll pause and ask for the real OTP from your inbox!
+
+Please wait...
+    """)
+    
+    try:
+        # Run STEP 1: Navigate and enter email until OTP page
+        result = run_uber_signup_step1(email=email, user_id=message.chat.id)
+        
+        if result["status"] == "otp_ready":
+            user_sessions[message.chat.id]['step'] = 'waiting_for_otp'
+            
+            bot.send_message(message.chat.id, f"""
+🎉 Perfect! I've successfully:
+✅ Navigated to Uber signup
+✅ Entered your email: {email}
+✅ Reached the OTP verification page
+
+📱 **Now check your email inbox!**
+🔐 **Send me the 4-digit OTP code when you receive it**
+
+The browser is waiting and ready for your real OTP...
+            """)
+            bot.register_next_step_handler(message, process_real_otp)
+            
+        elif result["status"] == "captcha_required":
+            bot.send_message(message.chat.id, """
+🤖 CAPTCHA Challenge Detected!
+
+This is completely normal when learning automation. 
+CAPTCHAs are designed to stop bots, so this means the site is working as expected.
+
+For learning purposes, this shows you:
+✅ How automation works up to security measures
+✅ Where human intervention is needed
+✅ Real-world challenges in automation
+
+Try again with /create - sometimes CAPTCHAs don't appear!
+            """)
+            
+        elif result["status"] == "error":
+            bot.send_message(message.chat.id, f"""
+❌ Issue during email entry phase:
+
+🔧 Error: {result['message']}
+
+This could be due to:
+• Site changes
+• Network issues  
+• Timing problems
+
+Try again with /create or check the logs!
+            """)
+            
+        else:
+            bot.send_message(message.chat.id, f"📊 Unexpected result: {result}")
+            
+    except Exception as e:
+        bot.send_message(message.chat.id, f"""
+💥 Unexpected error during automation:
+
+{str(e)}
+
+Please try again with /create
+        """)
+        print(f"Bot error in process_email: {e}")
+    
+    finally:
+        # Don't clear session yet - we need it for OTP step
+        pass
+
+def process_real_otp(message):
     otp = message.text.strip()
     
     # Basic OTP validation
     if len(otp) != 4 or not otp.isdigit():
-        bot.reply_to(message, "❌ OTP should be exactly 4 digits. Please try again:")
-        bot.register_next_step_handler(message, process_otp)
+        bot.reply_to(message, """
+❌ OTP should be exactly 4 digits. 
+
+Please check your email and send the correct 4-digit code:
+        """)
+        bot.register_next_step_handler(message, process_real_otp)
         return
     
-    # Get email from session
+    # Check if session exists
     if message.chat.id not in user_sessions:
-        bot.reply_to(message, "❌ Session expired. Please start over with /create")
+        bot.reply_to(message, """
+❌ Session expired or not found. 
+
+Please start over with /create
+        """)
         return
     
     email = user_sessions[message.chat.id]['email']
     
-    # Show what we're about to do
     bot.reply_to(message, f"""
-🚀 Starting Uber automation with:
-📧 Email: {email}
-🔐 OTP: {otp}
+🔐 Received OTP: {otp}
+📧 For email: {email}
 
-⏳ Please wait while I process this...
+🚀 Continuing automation...
+⏳ Entering your real OTP and completing the signup process...
     """)
     
     try:
-        # Run the automation with user's input
-        result = run_uber_signup(email=email, otp_code=otp)
+        # Run STEP 2: Enter real OTP and complete
+        result = run_uber_signup_step2(otp_code=otp, user_id=message.chat.id)
         
-        # Handle different result types
         if result["status"] == "success":
-            bot.send_message(message.chat.id, f"🎉 Success!\n\n✅ {result['message']}")
-            
-        elif result["status"] == "captcha_required":
-            bot.send_message(message.chat.id, f"🤖 CAPTCHA detected!\n\n⚠️ {result['message']}\n\nThis is normal for learning automation!")
+            bot.send_message(message.chat.id, f"""
+🎉 AMAZING! Account Creation Successful!
+
+✅ {result['message']}
+
+Your Uber account should now be ready to use!
+🚗 You can download the Uber app and log in with:
+📧 Email: {email}
+
+Great job learning automation! 🚀
+            """)
             
         elif result["status"] == "completed":
-            bot.send_message(message.chat.id, f"✅ Process completed!\n\n📋 {result['message']}")
+            bot.send_message(message.chat.id, f"""
+✅ Process Completed!
+
+📋 {result['message']}
+
+The OTP was entered successfully. Check your email or the Uber app to confirm account status.
+
+Good work! 🎯
+            """)
             
         elif result["status"] == "error":
-            bot.send_message(message.chat.id, f"❌ Error occurred:\n\n🔧 {result['message']}\n\nTry again or check the logs!")
+            bot.send_message(message.chat.id, f"""
+❌ Issue during OTP entry:
+
+🔧 {result['message']}
+
+This could be due to:
+• OTP expired or incorrect
+• Session timeout
+• Network issues
+
+You may need to start over with /create
+            """)
             
         else:
             bot.send_message(message.chat.id, f"📊 Result: {result}")
             
     except Exception as e:
-        bot.send_message(message.chat.id, f"💥 Unexpected error:\n\n{str(e)}\n\nPlease try again!")
-        print(f"Bot error: {e}")  # For debugging
+        bot.send_message(message.chat.id, f"""
+💥 Error during OTP processing:
+
+{str(e)}
+
+The browser session may have been lost. Please try /create again.
+        """)
+        print(f"Bot error in process_real_otp: {e}")
     
     finally:
         # Clear user session
         if message.chat.id in user_sessions:
             del user_sessions[message.chat.id]
         
-        # Offer to try again
-        bot.send_message(message.chat.id, "Want to try again? Use /create")
+        bot.send_message(message.chat.id, """
+Want to try creating another account? Use /create
+
+Thanks for learning automation! 🤖✨
+        """)
 
 # Handle any other messages
 @bot.message_handler(func=lambda message: True)
 def handle_other(message):
-    bot.reply_to(message, "🤔 I didn't understand that. Use /help to see available commands!")
+    bot.reply_to(message, """
+🤔 I didn't understand that command.
+
+Available commands:
+/start - Welcome message
+/create - Start Uber account creation
+/status - Check bot status
+/help - Show help
+
+Use /create to begin the automation process!
+    """)
 
 # Start the bot
 if __name__ == "__main__":
