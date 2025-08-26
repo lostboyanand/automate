@@ -1,295 +1,262 @@
 import os
-import requests
-from requests.sessions import Session
-import ssl
-import telebot
-import threading
-from http.server import HTTPServer, SimpleHTTPRequestHandler
-from create_account import run_uber_signup_step1, run_uber_signup_step2  # Updated imports
+import glob
+import time
+import logging
+from playwright.sync_api import sync_playwright
 
-# Monkey-patch Session to always disable SSL verification
-old_request = Session.request
+# Global storage for browser sessions
+browser_sessions = {}
 
-def new_request(self, *args, **kwargs):
-    kwargs['verify'] = False
-    return old_request(self, *args, **kwargs)
+# Set environment variable for Playwright
+os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "0"
 
-Session.request = new_request
+# Simple helper to check browser availability
+def check_browser_presence():
+    print("Checking browser installations...")
+    
+    # Check Firefox
+    firefox_dirs = glob.glob("/opt/render/.cache/ms-playwright/firefox*")
+    if firefox_dirs:
+        print(f"Found Firefox directories: {firefox_dirs}")
+    else:
+        print("No Firefox directories found")
+    
+    # Check Chrome
+    chrome_dirs = glob.glob("/opt/render/.cache/ms-playwright/chromium*")
+    if chrome_dirs:
+        print(f"Found Chrome directories: {chrome_dirs}")
+    else:
+        print("No Chrome directories found")
 
-# Disable SSL warnings
-import urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# Run the check at module load time
+check_browser_presence()
 
-# Get token from environment variable
-TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-
-# Create bot instance
-bot = telebot.TeleBot(TOKEN)
-
-# Store user sessions
-user_sessions = {}
-
-def start_health_server():
-    """Start a simple HTTP server for Render's health checks"""
-    port = int(os.environ.get('PORT', 10000))
-    server = HTTPServer(('0.0.0.0', port), SimpleHTTPRequestHandler)
-    print(f"🌐 Health server starting on port {port}")
-    server.serve_forever()
-
-# Define command handlers
-@bot.message_handler(commands=['start', 'help'])
-def send_welcome(message):
-    welcome_text = """
-🚗 Welcome to Uber Signup Bot!
-
-Commands:
-/create - Start creating an Uber account (Two-step process)
-/status - Check bot status
-/help - Show this message
-
-✨ New Flow:
-1. Send email → I'll start automation
-2. I'll reach OTP page → You send real OTP
-3. I'll complete the signup!
-
-Ready to automate your learning! 🚀
+def run_uber_signup_step1(email, user_id):
     """
-    bot.reply_to(message, welcome_text)
-
-@bot.message_handler(commands=['status'])
-def bot_status(message):
-    bot.reply_to(message, "✅ Bot is running on Render and ready!")
-
-@bot.message_handler(commands=['create'])
-def start_signup(message):
-    bot.reply_to(message, """
-📧 Please send me the email address you want to use for the Uber account:
-
-🔄 **New Smart Flow:**
-1. I'll start automation with your email
-2. I'll stop at OTP page and ask for real OTP
-3. You check your email and send me the real code
-4. I'll complete the signup!
-
-Much better than asking for OTP before it exists! 🎯
-    """)
-    bot.register_next_step_handler(message, process_email)
-
-def process_email(message):
-    email = message.text.strip()
+    Step 1: Navigate to signup, enter email, reach OTP page
+    Keep browser alive for Step 2
+    """
+    global browser_sessions
     
-    # Basic email validation
-    if '@' not in email or '.' not in email:
-        bot.reply_to(message, "❌ That doesn't look like a valid email. Please try again:")
-        bot.register_next_step_handler(message, process_email)
-        return
+    print(f"🚀 Step 1: Starting automation for email: {email}")
     
-    # Store email in user session
-    user_sessions[message.chat.id] = {
-        'email': email,
-        'step': 'processing_email'
-    }
+    p = sync_playwright().start()
     
-    bot.reply_to(message, f"""
-✅ Email: {email}
-
-🚀 Starting automation...
-📧 I'll navigate to Uber, enter your email, and reach the OTP page
-⏳ Then I'll pause and ask for the real OTP from your inbox!
-
-Please wait...
-    """)
+    # SIMPLIFIED BROWSER LAUNCH - Always use Firefox on Render
+    try:
+        print("📍 Attempting to launch Firefox browser...")
+        browser = p.firefox.launch(
+            headless=True,
+            args=['--no-sandbox', '--disable-dev-shm-usage']
+        )
+        print("✅ Firefox launched successfully!")
+    except Exception as firefox_error:
+        print(f"❌ Firefox launch error: {firefox_error}")
+        
+        # Try webkit as fallback
+        try:
+            print("📍 Trying WebKit as fallback...")
+            browser = p.webkit.launch(headless=True)
+            print("✅ WebKit launched successfully!")
+        except Exception as webkit_error:
+            print(f"❌ WebKit launch error: {webkit_error}")
+            
+            # Last resort - try chromium
+            try:
+                print("📍 Trying Chromium as last resort...")
+                browser = p.chromium.launch(
+                    headless=True,
+                    args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+                )
+                print("✅ Chromium launched successfully!")
+            except Exception as chromium_error:
+                print(f"❌ Chromium launch error: {chromium_error}")
+                p.stop()
+                return {"status": "error", "message": f"Could not launch any browser. Tried Firefox, WebKit, and Chromium."}
+    
+    context = browser.new_context(
+        accept_downloads=True,
+        has_touch=False,
+        ignore_https_errors=True,  # Add this to prevent SSL issues
+        viewport={'width': 1280, 'height': 800},
+        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+    )
+    
+    context.set_default_timeout(30000)
+    page = context.new_page()
+    
+    # Handle popups/new windows
+    page.on("popup", lambda popup: print(f"Popup opened: {popup.url}"))
+    context.on("dialog", lambda dialog: dialog.accept())
     
     try:
-        # Run STEP 1: Navigate and enter email until OTP page
-        result = run_uber_signup_step1(email=email, user_id=message.chat.id)
+        print("📍 Step 1: Navigating to Uber homepage...")
+        page.goto('https://www.uber.com/in/en/', wait_until='networkidle')
+        print(f"✅ Current URL: {page.url}")
         
-        if result["status"] == "otp_ready":
-            user_sessions[message.chat.id]['step'] = 'waiting_for_otp'
+        print("📍 Step 1: Looking for signup button...")
+        signup_button = page.get_by_role('button', name='Sign up to ride, drive, and')
+        print("✅ Found signup button, clicking it...")
+        signup_button.click()
+        
+        time.sleep(3)
+        print("📍 Step 1: Checking for popups...")
+        pages = context.pages
+        print(f"✅ Number of pages/windows open: {len(pages)}")
+        
+        if len(pages) > 1:
+            popup_page = pages[1]
+            print(f"✅ Found popup with URL: {popup_page.url}")
             
-            bot.send_message(message.chat.id, f"""
-🎉 Perfect! I've successfully:
-✅ Navigated to Uber signup
-✅ Entered your email: {email}
-✅ Reached the OTP verification page
-
-📱 **Now check your email inbox!**
-🔐 **Send me the 4-digit OTP code when you receive it**
-
-The browser is waiting and ready for your real OTP...
-            """)
-            bot.register_next_step_handler(message, process_real_otp)
+            try:
+                popup_page.get_by_role('link', name='Ride undefined').click()
+                time.sleep(1)
+                print("✅ Clicked 'Ride undefined' in popup")
+            except Exception as e:
+                print(f"⚠️ Ride undefined error: {e}")
             
-        elif result["status"] == "captcha_required":
-            bot.send_message(message.chat.id, """
-🤖 CAPTCHA Challenge Detected!
-
-This is completely normal when learning automation. 
-CAPTCHAs are designed to stop bots, so this means the site is working as expected.
-
-For learning purposes, this shows you:
-✅ How automation works up to security measures
-✅ Where human intervention is needed
-✅ Real-world challenges in automation
-
-Try again with /create - sometimes CAPTCHAs don't appear!
-            """)
-            
-        elif result["status"] == "error":
-            bot.send_message(message.chat.id, f"""
-❌ Issue during email entry phase:
-
-🔧 Error: {result['message']}
-
-This could be due to:
-• Site changes
-• Network issues  
-• Timing problems
-
-Try again with /create or check the logs!
-            """)
-            
+            page = popup_page
         else:
-            bot.send_message(message.chat.id, f"📊 Unexpected result: {result}")
+            try:
+                ride_link = page.get_by_text("Ride")
+                if ride_link.count() > 0:
+                    print("✅ Found Ride link on current page")
+                    ride_link.first.click()
+                    time.sleep(1)
+            except Exception as e:
+                print(f"⚠️ Ride link error: {e}")
+        
+        print("📍 Step 1: Looking for Sign up link...")
+        try:
+            page.get_by_role('link', name='Sign up').click()
+            print("✅ Clicked Sign up link")
+        except Exception as e:
+            print(f"⚠️ Sign up link error: {e}")
+        
+        time.sleep(1)
+        
+        print("📍 Step 1: Clicking forward button...")
+        try:
+            page.get_by_test_id('forward-button').click()
+            print("✅ Clicked forward button")
+        except Exception as e:
+            print(f"⚠️ Forward button error: {e}")
+        
+        print("📍 Step 1: Entering email...")
+        try:
+            email_field = page.get_by_role('textbox', name='Enter phone number or email')
+            email_field.click()
+            email_field.fill(email)
+            print(f"✅ Entered email: {email}")
+            
+            page.get_by_test_id('forward-button').click()
+            print("✅ Clicked forward button after email")
+        except Exception as e:
+            print(f"❌ Email entry error: {e}")
+            browser.close()
+            p.stop()
+            return {"status": "error", "message": f"Email entry failed: {str(e)}"}
+        
+        print("📍 Step 1: Checking for CAPTCHA...")
+        time.sleep(5)
+        
+        try:
+            captcha_frame = page.locator('iframe[title="Verification challenge"]')
+            if captcha_frame.count() > 0:
+                print("⚠️ CAPTCHA detected")
+                browser.close()
+                p.stop()
+                return {"status": "captcha_required", "message": "CAPTCHA verification required"}
+            else:
+                print("✅ No CAPTCHA detected")
+        except Exception as e:
+            print(f"⚠️ CAPTCHA detection error: {e}")
+        
+        print("📍 Step 1: Waiting for OTP fields...")
+        try:
+            page.wait_for_selector('#EMAIL_OTP_CODE-0', timeout=30000)
+            print("🎉 OTP fields appeared! Ready for real OTP...")
+            
+            # Store browser session for Step 2
+            browser_sessions[user_id] = {
+                'playwright': p,
+                'browser': browser,
+                'context': context,
+                'page': page
+            }
+            
+            return {"status": "otp_ready", "message": "Reached OTP page successfully"}
+            
+        except Exception as e:
+            print(f"❌ OTP fields not found: {e}")
+            browser.close()
+            p.stop()
+            return {"status": "error", "message": "Could not reach OTP page"}
             
     except Exception as e:
-        bot.send_message(message.chat.id, f"""
-💥 Unexpected error during automation:
+        print(f"💥 Step 1 Overall Error: {e}")
+        browser.close()
+        p.stop()
+        return {"status": "error", "message": str(e)}
 
-{str(e)}
-
-Please try again with /create
-        """)
-        print(f"Bot error in process_email: {e}")
+def run_uber_signup_step2(otp_code, user_id):
+    """
+    Step 2: Enter real OTP and complete signup
+    Use existing browser session from Step 1
+    """
+    global browser_sessions
     
-    finally:
-        # Don't clear session yet - we need it for OTP step
-        pass
-
-def process_real_otp(message):
-    otp = message.text.strip()
+    print(f"🚀 Step 2: Starting with real OTP: {otp_code}")
     
-    # Basic OTP validation
-    if len(otp) != 4 or not otp.isdigit():
-        bot.reply_to(message, """
-❌ OTP should be exactly 4 digits. 
-
-Please check your email and send the correct 4-digit code:
-        """)
-        bot.register_next_step_handler(message, process_real_otp)
-        return
+    if user_id not in browser_sessions:
+        return {"status": "error", "message": "No active browser session found"}
     
-    # Check if session exists
-    if message.chat.id not in user_sessions:
-        bot.reply_to(message, """
-❌ Session expired or not found. 
-
-Please start over with /create
-        """)
-        return
-    
-    email = user_sessions[message.chat.id]['email']
-    
-    bot.reply_to(message, f"""
-🔐 Received OTP: {otp}
-📧 For email: {email}
-
-🚀 Continuing automation...
-⏳ Entering your real OTP and completing the signup process...
-    """)
+    session = browser_sessions[user_id]
+    page = session['page']
     
     try:
-        # Run STEP 2: Enter real OTP and complete
-        result = run_uber_signup_step2(otp_code=otp, user_id=message.chat.id)
+        print("📍 Step 2: Entering real OTP digits...")
         
-        if result["status"] == "success":
-            bot.send_message(message.chat.id, f"""
-🎉 AMAZING! Account Creation Successful!
-
-✅ {result['message']}
-
-Your Uber account should now be ready to use!
-🚗 You can download the Uber app and log in with:
-📧 Email: {email}
-
-Great job learning automation! 🚀
-            """)
-            
-        elif result["status"] == "completed":
-            bot.send_message(message.chat.id, f"""
-✅ Process Completed!
-
-📋 {result['message']}
-
-The OTP was entered successfully. Check your email or the Uber app to confirm account status.
-
-Good work! 🎯
-            """)
-            
-        elif result["status"] == "error":
-            bot.send_message(message.chat.id, f"""
-❌ Issue during OTP entry:
-
-🔧 {result['message']}
-
-This could be due to:
-• OTP expired or incorrect
-• Session timeout
-• Network issues
-
-You may need to start over with /create
-            """)
-            
+        otp_digits = list(otp_code)
+        for i in range(min(4, len(otp_digits))):
+            page.locator(f'#EMAIL_OTP_CODE-{i}').fill(otp_digits[i])
+            print(f"✅ Entered digit {i+1}: {otp_digits[i]}")
+            time.sleep(0.5)
+        
+        print("📍 Step 2: Waiting for submission...")
+        time.sleep(3)
+        
+        current_url = page.url
+        print(f"📍 Current URL after OTP: {current_url}")
+        
+        if "welcome" in current_url.lower() or "dashboard" in current_url.lower():
+            print("🎉 SUCCESS: Account creation completed!")
+            return {"status": "success", "message": "Account created successfully!"}
         else:
-            bot.send_message(message.chat.id, f"📊 Result: {result}")
+            print("✅ OTP submitted, process completed")
+            return {"status": "completed", "message": "OTP submitted successfully"}
             
     except Exception as e:
-        bot.send_message(message.chat.id, f"""
-💥 Error during OTP processing:
-
-{str(e)}
-
-The browser session may have been lost. Please try /create again.
-        """)
-        print(f"Bot error in process_real_otp: {e}")
-    
-    finally:
-        # Clear user session
-        if message.chat.id in user_sessions:
-            del user_sessions[message.chat.id]
+        print(f"❌ Step 2 Error: {e}")
+        return {"status": "error", "message": f"OTP entry failed: {str(e)}"}
         
-        bot.send_message(message.chat.id, """
-Want to try creating another account? Use /create
+    finally:
+        print("🔄 Cleaning up browser session...")
+        try:
+            session['browser'].close()
+            session['playwright'].stop()
+            del browser_sessions[user_id]
+            print("✅ Browser session cleaned up")
+        except:
+            pass
 
-Thanks for learning automation! 🤖✨
-        """)
-
-# Handle any other messages
-@bot.message_handler(func=lambda message: True)
-def handle_other(message):
-    bot.reply_to(message, """
-🤔 I didn't understand that command.
-
-Available commands:
-/start - Welcome message
-/create - Start Uber account creation
-/status - Check bot status
-/help - Show help
-
-Use /create to begin the automation process!
-    """)
-
-# Start the bot
+# For testing locally
 if __name__ == "__main__":
-    print("🤖 Bot is starting...")
+    test_email = input("Enter test email: ")
+    result1 = run_uber_signup_step1(email=test_email, user_id="test_user")
+    print(f"Step 1 Result: {result1}")
     
-    # Start health server for Render in background thread
-    health_thread = threading.Thread(target=start_health_server, daemon=True)
-    health_thread.start()
-    print("✅ Health server started!")
-    
-    try:
-        print("✅ Bot is running and ready!")
-        bot.infinity_polling(none_stop=True)
-    except Exception as e:
-        print(f"❌ Bot error: {e}")
+    if result1["status"] == "otp_ready":
+        test_otp = input("Enter real OTP: ")
+        result2 = run_uber_signup_step2(otp_code=test_otp, user_id="test_user")
+        print(f"Step 2 Result: {result2}")

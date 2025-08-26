@@ -1,10 +1,51 @@
 import os
+import glob
 import time
 import logging
 from playwright.sync_api import sync_playwright
 
 # Global storage for browser sessions
 browser_sessions = {}
+
+def find_chrome_executable():
+    """Find the Chrome executable on Render"""
+    # Primary expected path
+    primary_path = "/opt/render/.cache/ms-playwright/chromium-1181/chrome-linux/chrome"
+    
+    if os.path.exists(primary_path):
+        print(f"✅ Chrome found at primary path: {primary_path}")
+        return primary_path
+    
+    print(f"❌ Chrome not found at expected path: {primary_path}")
+    
+    # Try to find Chrome in any version directory
+    possible_paths = glob.glob("/opt/render/.cache/ms-playwright/chromium*/chrome-linux/chrome")
+    if possible_paths:
+        chrome_path = possible_paths[0]
+        print(f"✅ Chrome found at alternative path: {chrome_path}")
+        return chrome_path
+    
+    # Try headless shell as fallback
+    headless_paths = glob.glob("/opt/render/.cache/ms-playwright/chromium*_headless_shell*/chrome-linux/chrome")
+    if headless_paths:
+        chrome_path = headless_paths[0]
+        print(f"✅ Found Chrome headless shell at: {chrome_path}")
+        return chrome_path
+        
+    # Final fallback - try Firefox
+    firefox_path = glob.glob("/opt/render/.cache/ms-playwright/firefox*/firefox/firefox")
+    if firefox_path:
+        print(f"⚠️ Chrome not found! Using Firefox as fallback: {firefox_path[0]}")
+        return firefox_path[0]
+        
+    print("❌ No browser executables found!")
+    return None
+
+# Run the check at module load time
+CHROME_PATH = find_chrome_executable()
+
+# Set environment variable for Playwright
+os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "0"
 
 def run_uber_signup_step1(email, user_id):
     """
@@ -15,18 +56,43 @@ def run_uber_signup_step1(email, user_id):
     
     print(f"🚀 Step 1: Starting automation for email: {email}")
     
-    # Set environment variable for Playwright
-    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "0"
-    
     p = sync_playwright().start()
     
-    # Use Chrome with exact path on Render
-    print("📍 Launching Chrome browser...")
-    browser = p.chromium.launch(
-        headless=True,
-        executable_path="/opt/render/.cache/ms-playwright/chromium-1181/chrome-linux/chrome",
-        args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-    )
+    try:
+        # Determine which browser to use
+        if CHROME_PATH and "chrome" in CHROME_PATH:
+            print(f"📍 Launching Chrome browser from: {CHROME_PATH}")
+            browser = p.chromium.launch(
+                headless=True,
+                executable_path=CHROME_PATH,
+                args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+            )
+        elif CHROME_PATH and "firefox" in CHROME_PATH:
+            print(f"📍 Launching Firefox browser from: {CHROME_PATH}")
+            browser = p.firefox.launch(
+                headless=True,
+                executable_path=CHROME_PATH, 
+                args=['--no-sandbox', '--disable-dev-shm-usage']
+            )
+        else:
+            print("📍 Launching default browser")
+            browser = p.chromium.launch(
+                headless=True,
+                args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+            )
+    except Exception as e:
+        print(f"❌ Browser launch error: {e}")
+        # Try Firefox as fallback
+        try:
+            print("📍 Trying Firefox as fallback...")
+            browser = p.firefox.launch(
+                headless=True,
+                args=['--no-sandbox', '--disable-dev-shm-usage']
+            )
+        except Exception as e2:
+            print(f"❌ Firefox fallback also failed: {e2}")
+            p.stop()
+            return {"status": "error", "message": f"Could not launch any browser: {str(e2)}"}
     
     context = browser.new_context(
         accept_downloads=True,
