@@ -17,7 +17,12 @@ def run_uber_signup_step1(email, user_id):
     p = sync_playwright().start()
     browser = p.chromium.launch(
         headless=True,
-        args=['--no-sandbox', '--disable-dev-shm-usage']
+        executable_path='/opt/render/.cache/ms-playwright/chromium-1181/chrome-linux/chrome',  # Correct path
+    args=[
+        '--no-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu'
+    ]
     )
     
     context = browser.new_context(
