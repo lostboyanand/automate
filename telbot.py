@@ -3,6 +3,8 @@ import requests
 from requests.sessions import Session
 import ssl
 import telebot
+import threading
+from http.server import HTTPServer, SimpleHTTPRequestHandler
 from create_account import run_uber_signup  # Import your automation
 
 # Monkey-patch Session to always disable SSL verification
@@ -18,7 +20,7 @@ Session.request = new_request
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-
+# Get token from environment variable
 TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 
 # Create bot instance
@@ -26,6 +28,13 @@ bot = telebot.TeleBot(TOKEN)
 
 # Store user sessions
 user_sessions = {}
+
+def start_health_server():
+    """Start a simple HTTP server for Render's health checks"""
+    port = int(os.environ.get('PORT', 10000))
+    server = HTTPServer(('0.0.0.0', port), SimpleHTTPRequestHandler)
+    print(f"🌐 Health server starting on port {port}")
+    server.serve_forever()
 
 # Define command handlers
 @bot.message_handler(commands=['start', 'help'])
@@ -44,7 +53,7 @@ Ready to automate your learning! 🚀
 
 @bot.message_handler(commands=['status'])
 def bot_status(message):
-    bot.reply_to(message, "✅ Bot is running and ready!")
+    bot.reply_to(message, "✅ Bot is running on Render and ready!")
 
 @bot.message_handler(commands=['create'])
 def start_signup(message):
@@ -131,6 +140,12 @@ def handle_other(message):
 # Start the bot
 if __name__ == "__main__":
     print("🤖 Bot is starting...")
+    
+    # Start health server for Render in background thread
+    health_thread = threading.Thread(target=start_health_server, daemon=True)
+    health_thread.start()
+    print("✅ Health server started!")
+    
     try:
         print("✅ Bot is running and ready!")
         bot.infinity_polling(none_stop=True)
