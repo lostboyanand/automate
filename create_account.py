@@ -1,6 +1,7 @@
-from playwright.sync_api import sync_playwright
+import os
 import time
 import logging
+from playwright.sync_api import sync_playwright
 
 # Global storage for browser sessions
 browser_sessions = {}
@@ -14,10 +15,17 @@ def run_uber_signup_step1(email, user_id):
     
     print(f"🚀 Step 1: Starting automation for email: {email}")
     
+    # Set environment variable for Playwright
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "0"
+    
     p = sync_playwright().start()
+    
+    # Use Chrome with exact path on Render
+    print("📍 Launching Chrome browser...")
     browser = p.chromium.launch(
         headless=True,
-        args=['--no-sandbox', '--disable-dev-shm-usage']
+        executable_path="/opt/render/.cache/ms-playwright/chromium-1181/chrome-linux/chrome",
+        args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
     )
     
     context = browser.new_context(
