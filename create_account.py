@@ -8,32 +8,35 @@ from playwright.sync_api import sync_playwright
 browser_sessions = {}
 
 def find_chrome_executable():
-    """Find the Chrome executable on Render"""
-    # Primary expected path
-    primary_path = "/opt/render/.cache/ms-playwright/chromium-1181/chrome-linux/chrome"
+    """Find the Chrome executable on EC2"""
+    # Find browsers in home directory
+    home_dir = os.path.expanduser('~')
     
-    if os.path.exists(primary_path):
-        print(f"✅ Chrome found at primary path: {primary_path}")
-        return primary_path
+    # Primary expected path (matches what we found)
+    primary_chromium = os.path.join(home_dir, '.cache/ms-playwright/chromium-1181/chrome-linux/chrome')
     
-    print(f"❌ Chrome not found at expected path: {primary_path}")
+    if os.path.exists(primary_chromium):
+        print(f"✅ Chrome found at primary path: {primary_chromium}")
+        return primary_chromium
+    
+    print(f"❌ Chrome not found at expected path: {primary_chromium}")
     
     # Try to find Chrome in any version directory
-    possible_paths = glob.glob("/opt/render/.cache/ms-playwright/chromium*/chrome-linux/chrome")
+    possible_paths = glob.glob(f"{home_dir}/.cache/ms-playwright/chromium*/chrome-linux/chrome")
     if possible_paths:
         chrome_path = possible_paths[0]
         print(f"✅ Chrome found at alternative path: {chrome_path}")
         return chrome_path
     
     # Try headless shell as fallback
-    headless_paths = glob.glob("/opt/render/.cache/ms-playwright/chromium*_headless_shell*/chrome-linux/chrome")
+    headless_paths = glob.glob(f"{home_dir}/.cache/ms-playwright/chromium*_headless_shell*/chrome-linux/chrome")
     if headless_paths:
         chrome_path = headless_paths[0]
         print(f"✅ Found Chrome headless shell at: {chrome_path}")
         return chrome_path
         
-    # Final fallback - try Firefox
-    firefox_path = glob.glob("/opt/render/.cache/ms-playwright/firefox*/firefox/firefox")
+    # Final fallback - try Firefox (matches what we found)
+    firefox_path = glob.glob(f"{home_dir}/.cache/ms-playwright/firefox*/firefox/firefox")
     if firefox_path:
         print(f"⚠️ Chrome not found! Using Firefox as fallback: {firefox_path[0]}")
         return firefox_path[0]
